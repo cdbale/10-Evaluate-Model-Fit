@@ -1,0 +1,223 @@
+---
+title: "Point Estimate and C.I. Simulation Evaluation"
+format: docx
+editor: visual
+---
+
+## Load Libraries
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+```
+
+## Simulate Data and Fit Regression Models
+
+We are going to simulate a bunch of different data sets with the same underlying data generating process.
+
+```{r}
+# Set population parameter values. These govern the data generating process
+beta0 <- 10
+beta1 <- 5
+
+# set the number of simulations
+N <- 100
+```
+
+Define the model we want to use.
+
+```{r}
+# Specify the model type and engine.
+model <- linear_reg() |> 
+  set_engine("lm")
+```
+
+Perform `N` simulations and extract the parameter estimates using the model applied to each simulated data set.
+
+```{r}
+# set seed for reproducibility
+set.seed(31296)
+
+# vectors for parameter estimates
+beta0_estimates <- c()
+beta1_estimates <- c()
+
+# for each simulation,
+for (i in 1:N){
+  
+  # Simulate data.
+  sim_data <- tibble(
+    x = runif(100, min = 0, max = 7),
+    y = beta0 + beta1 * x + rnorm(100, mean = 0, sd = 7))
+  
+  # fit the model, regressing y on x
+  model_results <- model |> 
+    fit(y ~ x, data = sim_data)
+  
+  # extract tidy model results and pull out the parameter estimates
+  estimated_params <- model_results |>
+    tidy() |>
+    pull(estimate)
+  
+  # store parameter estimates in their corresponding vectors
+  beta0_estimates <- c(beta0_estimates, estimated_params[1])
+  beta1_estimates <- c(beta1_estimates, estimated_params[2])
+}
+```
+
+Look at the last simulated data set.
+
+```{r}
+sim_data |>
+  ggplot(aes(x = x, y = y)) +
+  geom_point() +
+  labs(x = "X",
+       y = "Y",
+       title = "Simulated Data Scatterplot: Y as a function of X") +
+  geom_smooth(method = "lm", 
+              se = FALSE)
+```
+
+Look at point estimates from all simulated data sets.
+
+```{r}
+(estimated_params <- tibble(
+  sim_number = 1:length(beta0_estimates),
+  beta0 = beta0_estimates,
+  beta1 = beta1_estimates,
+))
+```
+Tidy the parameter estimates.
+
+```{r}
+(estimated_params <- estimated_params |>
+  pivot_longer(-sim_number, names_to = "parameter", values_to = "estimate"))
+```
+
+Plot the distributions of point estimates.
+
+```{r}
+estimated_params |>
+  ggplot(aes(x = parameter, y = estimate)) +
+  geom_boxplot() +
+  labs(x = "Parameter Name",
+       y = "Estimated Value",
+       title = "Distributions of Intercept and Slope Parameter Estimates")
+```
+
+What values did we choose for these parameters?
+
+```{r}
+beta0
+beta1
+```
+
+What should we take away from this? Point estimates can vary widely using different data sets from the same data generating process, and thus we should not rely on a point estimate alone to inform our managerial decisions.
+
+## Confidence Intervals
+
+Let's repeat the simulation process but evaluate our model estimates using confidence intervals.
+
+What is the formal interpretation of a confidence interval?
+
+"If you were to repeat the data sampling, modeling, and confidence interval computation many times, 95% of the calculated intervals would contain the true population parameter."
+
+This process is unfeasible with real-world data. But, we CAN do it with simulated data. Let's test this theory!
+
+Perform N simulations and extract the confidence interval estimates from the model applied to each simulated data set.
+
+```{r}
+# set seed for reproducibility
+set.seed(31296)
+
+# tibble for confidence interval estimates
+conf_int_estimates <- tibble()
+
+for (i in 1:N){
+  
+  # Simulate data.
+  sim_data <- tibble(
+    x = runif(100, min = 0, max = 7),
+    y = beta0 + beta1 * x + rnorm(100, mean = 0, sd = 7))
+  
+  # fit model to simulated data
+  model_results <- model |> 
+    fit(y ~ x, data = sim_data)
+  
+  # extract tidy model results including confidence intervals,
+  # create variables to track simulation number, parameter name,
+  # and select desired variables
+  estimated_params <- model_results |>
+    tidy(conf.int = TRUE) |>
+    mutate(sim_number = i,
+           parameter = c("beta0", "beta1")) |>
+    select(sim_number, parameter, estimate, conf.low, conf.high)
+  
+  # add estimates from current model to dataframe
+  conf_int_estimates <- conf_int_estimates |>
+    bind_rows(estimated_params)
+}
+```
+
+View confidence interval estimates.
+
+```{r}
+conf_int_estimates
+```
+
+Sort the estimates of each parameter by the point estimate (in ascending order) - note that this breaks the association between `beta0` and `beta1` estimates from the same models. This is done for visualization purposes only.
+
+```{r}
+conf_int_estimates_sorted <- conf_int_estimates |>
+  # arrange is ascending order of point estimate
+  arrange(parameter, estimate) |>
+  # for each parameter,
+  group_by(parameter) |>
+  # re-define simulation number in order of point estimate magnitude
+  # create new variable contains_param that is "Yes" if the confidence interval contains the population estimate and "No" otherwise
+  mutate(sim_number = 1:n(),
+         contains_param = if_else(parameter == "beta0", if_else(conf.low <= beta0 & conf.high >= beta0, "Yes", "No"), if_else(conf.low <= beta1 & conf.high >= beta1, "Yes", "No"))) |>
+  ungroup()
+```
+
+```{r}
+conf_int_estimates_sorted
+```
+
+Plot the point estimates (in ascending order) along with "error bars" showing the boundaries of the associated confidence intervals.
+
+```{r fig.width=10}
+conf_int_estimates_sorted %>%
+  ggplot(aes(x = sim_number, y = estimate, color = contains_param)) +
+  geom_point() +
+  geom_errorbar(aes(ymax = conf.high, ymin = conf.low)) +
+  facet_wrap(~parameter) +
+  scale_color_manual(values=c("red", "blue")) +
+  theme(legend.position="bottom") +
+  labs(x = "Simulation Number",
+       y = "Estimate (and C.I.)",
+       color="Does the C.I. Contain the Population Parameter?",
+       title="Point Estimates and Confidence Intervals",
+       subtitle = "Models Estimated From Simulated Data")
+```
+
+What percentage of confidence intervals contain the population parameter estimate?
+
+```{r}
+conf_int_estimates_sorted |>
+  group_by(parameter) |>
+  summarize(percent_contains = mean(contains_param == "Yes"))
+```
+
+While confidence intervals are not guaranteed to contain the population parameter, they give a more conservative estimate of coefficient values. 
+
+So what are the advantages of confidence intervals?
+
+- They give an estimate of the coefficient magnitude AND statistical significance all in one.
+- They quantify uncertainty - the wider the interval, the less certain we are about our estimate and the less likely we will have statistical significance.
+
+How do I interpret a single confidence interval?
+
+"The method used to construct this interval will capture the population parameter in 95% of cases."
+
+"With 95% confidence, I infer that the true value of beta is between (lower bound, upper bound)."
